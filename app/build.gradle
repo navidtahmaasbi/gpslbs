@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'com.example.gpslbs'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.example.gpslbs"
@@ -34,6 +34,9 @@ dependencies {
     implementation libs.material
     implementation libs.work.runtime
     implementation libs.play.services.location
+    implementation libs.okhttp
+    implementation libs.core
+    implementation libs.gson
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
