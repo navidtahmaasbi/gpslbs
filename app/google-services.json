@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "932526818758",
+    "project_id": "gpslbs-ab4f3",
+    "storage_bucket": "gpslbs-ab4f3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:932526818758:android:6db1a56070b482ab2a1ec7",
+        "android_client_info": {
+          "package_name": "com.example.gpslbs"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDOzrRR1gKibvlwtumXhGZlI1xYg6BBRuo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
