@@ -1,13 +1,12 @@
 package com.example.gpslbs;
 
 import android.content.Context;
-import android.content.pm.PackageManager;
+import android.content.Intent;
 import android.location.Location;
 import android.util.Log;
 
 
 import androidx.annotation.NonNull;
-import androidx.core.content.ContextCompat;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -15,45 +14,41 @@ import androidx.work.WorkerParameters;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.tasks.Tasks;
+import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.gson.Gson;
 
-import org.json.JSONObject;
-
-import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
-import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 
 
 public class LocationWorker extends Worker {
     private static final String TAG = "LocationWorker";
-    private static final String SERVER_URL = "https://your-server.com/api/location";
     private FusedLocationProviderClient fusedLocationClient;
+    private FirebaseFirestore db;
 
     // Data class for JSON serialization
     public static class LocationData {
         double latitude;
         double longitude;
         String timestamp;
-        String source;
+        String method;
 
         LocationData(double latitude, double longitude, String timestamp, String source) {
             this.latitude = latitude;
             this.longitude = longitude;
             this.timestamp = timestamp;
-            this.source = source;
+            this.method = method;
         }
     }
 
     public LocationWorker(@NonNull Context context, @NonNull WorkerParameters params) {
         super(context, params);
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context);
+        db = FirebaseFirestore.getInstance();
     }
 
     @NonNull
@@ -66,48 +61,64 @@ public class LocationWorker extends Worker {
             if (location != null) {
                 // Log location data
                 String timestamp = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(new Date());
+                String provider = location.getProvider();
+                String method = provider.equals("gps") ? "GPS" : "LBS";
                 Log.d(TAG, "Location acquired: " +
                         "Latitude=" + location.getLatitude() +
                         ", Longitude=" + location.getLongitude() +
                         ", Timestamp=" + timestamp +
-                        ", Source=" + location.getProvider());
+                        ", Method=" + method +
+                        ",Accuracy=" + location.getAccuracy() + "meters");
+
+                Map<String, Object> data = new HashMap<>();
+                data.put("latitude", location.getLatitude());
+                data.put("longitude", location.getLongitude());
+                data.put("timestamp", timestamp);
+                data.put("method", method);
+                data.put("accuracy", location.getAccuracy());
 
                 // Prepare JSON data with Gson
-                LocationData data = new LocationData(
+                LocationData locationdata = new LocationData(
                         location.getLatitude(),
                         location.getLongitude(),
                         timestamp,
-                        location.getProvider()
+                        method
                 );
                 Gson gson = new Gson();
-                String json = gson.toJson(data);
+                String json = gson.toJson(locationdata);
                 Log.d(TAG, "JSON data: " + json);
 
-                // Send to server
-                OkHttpClient client = new OkHttpClient();
-                RequestBody body = RequestBody.create(json, MediaType.parse("application/json"));
-                Request request = new Request.Builder().url(SERVER_URL).post(body).build();
-                Response response = client.newCall(request).execute();
-
-                if (response.isSuccessful()) {
-                    Log.d(TAG, "Location data sent successfully");
-                    return Result.success();
-                } else {
-                    Log.d(TAG, "Failed to send location data, retrying");
-                    return Result.retry();
-                }
+                db.collection("locations")
+                        .add(data)
+                        .addOnSuccessListener(documentReference ->{
+                        Log.d(TAG, "Location data stored successfuly: " + documentReference.getId());
+                        String details = "Latitude: " + location.getLatitude() +
+                                ", Longitude: " + location.getLongitude() +
+                                ", Timestamp: " + timestamp +
+                                ", Method: " + method;
+                        Intent broadcastIntent = new Intent("com.example.gpslbs.LOCATION_SENT");
+                        broadcastIntent.putExtra("details", details);
+                        getApplicationContext().sendBroadcast(broadcastIntent);
+            })
+                        .addOnFailureListener(e -> {
+                            Log.e(TAG, "Failed to store location data, retrying: " + e.getMessage());
+                        });
+                return Result.success();
             } else {
                 Log.d(TAG, "Location is null, retrying");
                 return Result.retry();
             }
-        } catch (SecurityException e) {
-            Log.e(TAG, "SecurityException: " + e.getMessage());
+            }catch (SecurityException e) {
+            Log.e(TAG, "SecurityException:" + e.getMessage());
             return Result.retry();
-        } catch (Exception e) {
-            Log.e(TAG, "Exception: " + e.getMessage());
+        }catch (Exception e) {
+            Log.e(TAG, "Exception:" + e.getMessage());
             return Result.retry();
+
         }
+
     }
 }
+
 
 

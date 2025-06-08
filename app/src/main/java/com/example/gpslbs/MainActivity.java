@@ -1,6 +1,8 @@
 package com.example.gpslbs;
 import android.Manifest;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -28,6 +30,9 @@ public class MainActivity extends AppCompatActivity {
     private TextView statusText;
     private Button toggleButton;
     private boolean isServiceRunning = false;
+    private TextView lastSendText;
+    private SharedPreferences prefs;
+    private LocationSentReceiver locationSentReceiver;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,12 +40,28 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         statusText = findViewById(R.id.status_text);
+        lastSendText = findViewById(R.id.last_send_text);
         toggleButton = findViewById(R.id.toggle_button);
+        prefs = getSharedPreferences("LocationAppPrefs", MODE_PRIVATE);
+        locationSentReceiver = new LocationSentReceiver(this);
+        registerReceiver(locationSentReceiver, new IntentFilter("com.example.gpslbs.LOCATION_SENT"));
 
-        // درخواست مجوزها در زمان راه‌اندازی
+        // Load last send details
+        updateLastSendUI();
+
+        // Request battery optimization exemption
+        requestBatteryOptimizationExemption();
+
+        // Request permissions
         requestLocationPermissions();
 
-        // فعال/غیرفعال کردن سرویس
+
+        promptAutoStartPermission();
+
+
+
+
+        // Toggle service
         toggleButton.setOnClickListener(v -> {
             Log.d(TAG, "Toggle button clicked, isServiceRunning: " + isServiceRunning);
             if (isServiceRunning) {
@@ -49,7 +70,7 @@ public class MainActivity extends AppCompatActivity {
                 statusText.setText("Service: Stopped");
                 toggleButton.setText("Start Service");
                 isServiceRunning = false;
-                Intent broadcastIntent = new Intent("com.example.locationapp.SERVICE_STOPPED");
+                Intent broadcastIntent = new Intent("com.example.gpslbs.SERVICE_STOPPED");
                 sendBroadcast(broadcastIntent);
             } else {
                 Log.d(TAG, "Attempting to start service");
@@ -65,14 +86,22 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         });
+
+    }
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            if (getPackageManager().resolveActivity(intent, 0) != null) {
+                startActivity(intent);
+            }
+        }
     }
 
     private void requestLocationPermissions() {
-        // بررسی مجوزهای ACCESS_FINE_LOCATION و ACCESS_COARSE_LOCATION
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             Log.d(TAG, "Requesting location permissions");
-            // نمایش دیالوگ توضیحی
             new AlertDialog.Builder(this)
                     .setTitle("Location Permission Required")
                     .setMessage("This app needs location permissions to track your location. Please grant the permissions.")
@@ -88,7 +117,6 @@ public class MainActivity extends AppCompatActivity {
                     .show();
         } else {
             Log.d(TAG, "Location permissions already granted");
-            // بررسی ACCESS_BACKGROUND_LOCATION برای Android 10 و بالاتر
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                     ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 Log.d(TAG, "Requesting background location permission");
@@ -110,6 +138,7 @@ public class MainActivity extends AppCompatActivity {
                 startLocationWork();
                 statusText.setText("Service: Running");
                 toggleButton.setText("Stop Service");
+                isServiceRunning = true;
             }
         }
     }
@@ -120,7 +149,6 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Log.d(TAG, "Permissions granted");
-                // اگر ACCESS_FINE_LOCATION یا ACCESS_COARSE_LOCATION اعطا شد، بررسی ACCESS_BACKGROUND_LOCATION
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                         ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                     Log.d(TAG, "Requesting background location permission after foreground permission granted");
@@ -141,12 +169,12 @@ public class MainActivity extends AppCompatActivity {
                     startLocationWork();
                     statusText.setText("Service: Running");
                     toggleButton.setText("Stop Service");
+                    isServiceRunning = true;
                 }
             } else {
                 Log.d(TAG, "Permissions denied");
                 statusText.setText("Service: Stopped - Permission Denied");
                 toggleButton.setText("Start Service");
-                // بررسی "Don't ask again"
                 if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.ACCESS_FINE_LOCATION)) {
                     Log.d(TAG, "Permissions permanently denied");
                     new AlertDialog.Builder(this)
@@ -164,11 +192,42 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
+    @Override
+    protected void onDestroy(){
+        super.onDestroy();
+        unregisterReceiver(locationSentReceiver);
+    }
 
     private void startLocationWork() {
         Log.d(TAG, "Starting location work");
         PeriodicWorkRequest locationRequest = new PeriodicWorkRequest.Builder(LocationWorker.class, 30, TimeUnit.SECONDS)
                 .build();
         WorkManager.getInstance(this).enqueueUniquePeriodicWork("locationWork", ExistingPeriodicWorkPolicy.KEEP, locationRequest);
+        isServiceRunning = true;
+    }
+
+    private void updateLastSendUI() {
+        String lastSend = prefs.getString("last_send", "No successful send yet");
+        lastSendText.setText("Last Successful Send:\n" + lastSend);
+    }
+
+    // Called by BroadcastReceiver to update last send
+    public void onLocationSent(String details) {
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString("last_send", details);
+        editor.apply();
+        runOnUiThread(() -> updateLastSendUI());
+    }
+    private void promptAutoStartPermission() {
+        new AlertDialog.Builder(this)
+                .setTitle("Enable Auto-Start")
+                .setMessage("To ensure the app runs after device restart, please enable auto-start in settings.")
+                .setPositiveButton("Go to Settings", (dialog, which) -> {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 }
