@@ -7,6 +7,10 @@ import android.util.Log;
 
 
 import androidx.annotation.NonNull;
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -22,13 +26,14 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-
+import java.util.concurrent.TimeUnit;
 
 
 public class LocationWorker extends Worker {
     private static final String TAG = "LocationWorker";
     private FusedLocationProviderClient fusedLocationClient;
     private FirebaseFirestore db;
+    private static final long REPEAT_INTERVAL_SECONDS = 30;
 
     // Data class for JSON serialization
     public static class LocationData {
@@ -37,7 +42,7 @@ public class LocationWorker extends Worker {
         String timestamp;
         String method;
 
-        LocationData(double latitude, double longitude, String timestamp, String source) {
+        LocationData(double latitude, double longitude, String timestamp, String method) {
             this.latitude = latitude;
             this.longitude = longitude;
             this.timestamp = timestamp;
@@ -103,6 +108,18 @@ public class LocationWorker extends Worker {
                         .addOnFailureListener(e -> {
                             Log.e(TAG, "Failed to store location data, retrying: " + e.getMessage());
                         });
+                //Reschedule if repeatino
+                boolean isRepeating = getInputData().getBoolean("isRepeating", false);
+                if (isRepeating){
+                    OneTimeWorkRequest nextRequest = new OneTimeWorkRequest.Builder(LocationWorker.class)
+                            .setInputData(new Data.Builder().putBoolean("isRepeating", true).build())
+                            .setInitialDelay(REPEAT_INTERVAL_SECONDS, TimeUnit.SECONDS)
+                            .build();
+                    WorkManager.getInstance(getApplicationContext())
+                            .enqueueUniqueWork("locationWork", ExistingWorkPolicy.APPEND_OR_REPLACE, nextRequest);
+                    Log.d(TAG, "Scheduled next location work" + REPEAT_INTERVAL_SECONDS + "seconds");
+                }
+
                 return Result.success();
             } else {
                 Log.d(TAG, "Location is null, retrying");

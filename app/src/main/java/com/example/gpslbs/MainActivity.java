@@ -1,9 +1,11 @@
 package com.example.gpslbs;
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,13 +17,19 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 
 import com.example.gpslbs.LocationWorker;
 import com.example.gpslbs.R;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
@@ -33,6 +41,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView lastSendText;
     private SharedPreferences prefs;
     private LocationSentReceiver locationSentReceiver;
+    private static final String WORK_NAME = "locationWork";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,14 +57,10 @@ public class MainActivity extends AppCompatActivity {
 
         // Load last send details
         updateLastSendUI();
-
         // Request battery optimization exemption
         requestBatteryOptimizationExemption();
-
         // Request permissions
         requestLocationPermissions();
-
-
         promptAutoStartPermission();
 
 
@@ -200,9 +205,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void startLocationWork() {
         Log.d(TAG, "Starting location work");
-        PeriodicWorkRequest locationRequest = new PeriodicWorkRequest.Builder(LocationWorker.class, 30, TimeUnit.SECONDS)
+        OneTimeWorkRequest locationRequest = new OneTimeWorkRequest.Builder(LocationWorker.class)
+                .setInputData(new Data.Builder().putBoolean("isRepeating", true).build())
+                .setInitialDelay(0, TimeUnit.SECONDS)
                 .build();
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork("locationWork", ExistingPeriodicWorkPolicy.KEEP, locationRequest);
+        WorkManager.getInstance(this).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, locationRequest);
         isServiceRunning = true;
     }
 
@@ -219,15 +226,108 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> updateLastSendUI());
     }
     private void promptAutoStartPermission() {
-        new AlertDialog.Builder(this)
-                .setTitle("Enable Auto-Start")
-                .setMessage("To ensure the app runs after device restart, please enable auto-start in settings.")
-                .setPositiveButton("Go to Settings", (dialog, which) -> {
-                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        // Skip if user dismissed prompt
+        if (prefs.getBoolean("auto_start_prompt_dismissed", false)) {
+            Log.d(TAG, "Auto-start prompt dismissed, skipping");
+            return;
+        }
+
+        String manufacturer = Build.MANUFACTURER.toLowerCase();
+        // OEMs with auto-start restrictions
+        Set<String> restrictedOems = new HashSet<>();
+        restrictedOems.add("xiaomi");
+        restrictedOems.add("huawei");
+        restrictedOems.add("honor");
+        restrictedOems.add("oppo");
+        restrictedOems.add("vivo");
+        restrictedOems.add("oneplus");
+        restrictedOems.add("realme");
+        restrictedOems.add("samsung");
+
+        if (!restrictedOems.contains(manufacturer)) {
+            Log.d(TAG, "No auto-start prompt needed for: " + manufacturer);
+            return;
+        }
+
+        Intent intent = new Intent();
+        String message;
+        boolean isOemSpecific = true;
+
+        // OEM-specific settings and messages
+        if (manufacturer.contains("xiaomi")) {
+            intent.setComponent(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+            message = "Please enable 'Run at startup' in Settings > Apps > Permissions > Other app capabilities. Find '" + getString(R.string.app_name) + "' and toggle it on.";
+        } else if (manufacturer.contains("huawei") || manufacturer.contains("honor")) {
+            intent.setComponent(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"));
+            message = "Please enable 'Auto-launch' in Settings > Apps > Battery > App launch > Manage manually for '" + getString(R.string.app_name) + "'.";
+        } else if (manufacturer.contains("oppo")) {
+            intent.setComponent(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"));
+            message = "Please enable 'Auto-start' in Settings > App management > Auto-start for '" + getString(R.string.app_name) + "'.";
+        } else if (manufacturer.contains("vivo")) {
+            intent.setComponent(new ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"));
+            message = "Please enable 'Auto-start' in Settings > Apps > Auto-start for '" + getString(R.string.app_name) + "'.";
+        } else if (manufacturer.contains("oneplus")) {
+            intent.setAction("com.android.settings.ACTION_APPLICATION_DETAILS_SETTINGS");
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            message = "Please enable 'Allow auto-launch' and 'Allow background activity' in Settings > Battery > App battery management for '" + getString(R.string.app_name) + "'. Also, lock the app in Recent Apps.";
+            isOemSpecific = false; // No reliable auto-launch intent
+        } else if (manufacturer.contains("realme")) {
+            intent.setAction("com.android.settings.ACTION_APPLICATION_DETAILS_SETTINGS");
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            message = "Please enable 'Auto-start' in Settings > App management > Auto-start for '" + getString(R.string.app_name) + "'. Also, lock the app in Recent Apps.";
+            isOemSpecific = false; // No reliable auto-start intent
+        } else if (manufacturer.contains("samsung")) {
+            intent.setAction("com.android.settings.ACTION_APPLICATION_DETAILS_SETTINGS");
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            message = "Please add '" + getString(R.string.app_name) + "' to 'Never auto sleeping apps' in Settings > Battery > Background usage limits, and set Battery optimization to 'Don’t optimize'.";
+            isOemSpecific = false; // No specific auto-start intent
+        } else {
+            intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            message = "Please enable auto-start or disable battery optimization for '" + getString(R.string.app_name) + "' in Settings > Apps > Permissions.";
+            isOemSpecific = false;
+        }
+
+        // Verify intent resolves
+        List<ResolveInfo> list = getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+        if (list.size() > 0) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Enable Background Operation")
+                    .setMessage(message)
+                    .setPositiveButton("Go to Settings", (dialog, which) -> {
+                        try {
+                            startActivity(intent);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to start settings: " + e.getMessage());
+                            Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                            fallback.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(fallback);
+                        }
+                    })
+                    .setNegativeButton("Dismiss", (dialog, which) -> {
+                        prefs.edit().putBoolean("auto_start_prompt_dismissed", true).apply();
+                    })
+                    .setCancelable(false)
+                    .show();
+        } else {
+            // Fallback intent
+            intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            new AlertDialog.Builder(this)
+                    .setTitle("Enable Background Operation")
+                    .setMessage(message)
+                    .setPositiveButton("Go to Settings", (dialog, which) -> startActivity(intent))
+                    .setNegativeButton("Dismiss", (dialog, which) -> {
+                        prefs.edit().putBoolean("auto_start_prompt_dismissed", true).apply();
+                    })
+                    .setCancelable(false)
+                    .show();
+        }
     }
+
+
+
+
+
+
 }
